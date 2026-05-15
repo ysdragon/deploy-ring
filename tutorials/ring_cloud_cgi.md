@@ -66,8 +66,8 @@ To make our Ring scripts work reliably and securely, we will use a "wrapper." Th
 
 This wrapper cleverly handles different hosting configurations, sets up necessary library paths, and includes crucial security checks. Create a file named `ring.cgi` with the content below.
 
-```bash
-#!/bin/bash
+```shell
+#!/bin/sh
 
 # ==============================================================================
 # Universal Ring CGI Wrapper
@@ -93,20 +93,26 @@ if [ -z "$HOME" ]; then
   # cPanel/DirectAdmin: /home/username/public_html/cgi-bin
   # KeyHelp: /home/users/username/www/cgi-bin
   # ispManager: /var/www/username/data/www/domain/cgi-bin
-  if [[ "$PWD" == /var/www/vhosts/* ]]; then
-    HOME_DIR_GUESS="${PWD%/httpdocs*}"
-  elif [[ "$PWD" == /home/users/* ]]; then
-    HOME_DIR_GUESS="${PWD%/www*}"
-  elif [[ "$PWD" == /home/*/public_html* ]]; then
-    HOME_DIR_GUESS="${PWD%/public_html*}"
-  elif [[ "$PWD" == /home/*/httpdocs* ]]; then
-    HOME_DIR_GUESS="${PWD%/httpdocs*}"
-  elif [[ "$PWD" == /var/www/*/data/* ]]; then
-    HOME_DIR_GUESS="${PWD%%/data/*}/data"
-  else
-    # Fallback to the current directory if no pattern matches.
-    HOME_DIR_GUESS="$PWD"
-  fi
+  case "$PWD" in
+    /var/www/vhosts/*)
+      HOME_DIR_GUESS="${PWD%/httpdocs*}"
+      ;;
+    /home/users/*)
+      HOME_DIR_GUESS="${PWD%/www*}"
+      ;;
+    /home/*/public_html*)
+      HOME_DIR_GUESS="${PWD%/public_html*}"
+      ;;
+    /home/*/httpdocs*)
+      HOME_DIR_GUESS="${PWD%/httpdocs*}"
+      ;;
+    /var/www/*/data/*)
+      HOME_DIR_GUESS="${PWD%%/data/*}/data"
+      ;;
+    *)
+      HOME_DIR_GUESS="$PWD"
+      ;;
+  esac
   RING_DIR="$HOME_DIR_GUESS/ring"
 else
   RING_DIR="$HOME/ring"
@@ -133,45 +139,48 @@ TARGET_RING_SCRIPT="$PATH_TRANSLATED"
 
 # Check 1: Ensure the target script exists.
 if [ ! -f "$TARGET_RING_SCRIPT" ]; then
-    echo "Content-Type: text/html"
-    echo ""
-    echo "<h1>404 Not Found</h1>"
-    echo "<p>The requested Ring script could not be found.</p>"
+    printf "Status: 404 Not Found\r\nContent-Type: text/html\r\n\r\n"
+    printf "<h1>404 Not Found</h1><p>The requested Ring script could not be found.</p>"
     exit 0
 fi
 
 # Security Check: Prevent path traversal attacks.
 # Ensure the canonical path of the target script is within the web root.
-REAL_TARGET_PATH=$(realpath -s "$TARGET_RING_SCRIPT")
+REAL_TARGET_PATH=$(readlink -f "$TARGET_RING_SCRIPT")
+REAL_WEB_ROOT=$(readlink -f "$RING_WEB_ROOT" 2>/dev/null || echo "$RING_WEB_ROOT")
 
-if [[ "$REAL_TARGET_PATH" != "$RING_WEB_ROOT"* ]]; then
-    echo "Content-Type: text/html"
-    echo ""
-    echo "<h1>403 Forbidden</h1>"
-    echo "<p>Access to the requested resource is not allowed.</p>"
+if [ -z "$REAL_TARGET_PATH" ] || [ -z "$REAL_WEB_ROOT" ]; then
+    printf "Status: 403 Forbidden\r\nContent-Type: text/html\r\n\r\n"
+    printf "<h1>403 Forbidden</h1><p>Access to the requested resource is not allowed.</p>"
     exit 0
 fi
 
+case "$REAL_TARGET_PATH" in
+  "$REAL_WEB_ROOT"*) ;;
+  *)
+    printf "Status: 403 Forbidden\r\nContent-Type: text/html\r\n\r\n"
+    printf "<h1>403 Forbidden</h1><p>Access to the requested resource is not allowed.</p>"
+    exit 0
+    ;;
+esac
+
 # Check 2: Ensure the Ring executable is found and has execute permissions.
 if [ ! -x "$RING_EXECUTABLE" ]; then
-    echo "Content-Type: text/html"
-    echo ""
-    echo "<h1>500 Server Configuration Error</h1>"
-    echo "<p>The Ring Compiler/VM could not be found or is not executable. Check that the 'ring' folder was uploaded to your home directory.</p>"
+    printf "Status: 500 Internal Server Error\r\nContent-Type: text/html\r\n\r\n"
+    printf "<h1>500 Server Configuration Error</h1><p>The Ring Compiler/VM could not be found or is not executable. Check that the 'ring' folder was uploaded to your home directory.</p>"
     exit 0
 fi
 
 # Change to the script's directory so file operations are relative to it.
-pushd "$(dirname "$TARGET_RING_SCRIPT")" > /dev/null
+cd "$(dirname "$TARGET_RING_SCRIPT")" || {
+    printf "Status: 500 Internal Server Error\r\nContent-Type: text/html\r\n\r\n"
+    printf "<h1>500 Internal Server Error</h1><p>Cannot change to script directory.</p>"
+    exit 0
+}
 
 # Execute the Ring script in CGI mode.
 # The Ring script is responsible for printing all headers and content.
-"$RING_EXECUTABLE" -cgi "$TARGET_RING_SCRIPT"
-
-# Return to the original directory.
-popd > /dev/null
-
-exit 0
+exec "$RING_EXECUTABLE" -cgi "$TARGET_RING_SCRIPT"
 ```
 
 ## 5. Deployment Scenarios
